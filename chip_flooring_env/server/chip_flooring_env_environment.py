@@ -31,6 +31,18 @@ class ChipFlooringEnvironment(Environment):
         self.canvas = None
         self.block = []
         self.current_block_index = 0
+        self.global_netlist ={
+    "nodes": [
+        {"id": "A", "height": 2, "width": 3},
+        {"id": "B", "height": 1, "width": 2},
+        {"id": "C", "height": 2, "width": 2},
+    ],
+    "edges": [
+        {"from": "A", "to": "B", "weight": 1.0},
+        {"from": "A", "to": "C", "weight": 2.0},
+        {"from": "B", "to": "C", "weight": 1.5},
+    ]
+}
 
     def reset(self) -> ChipFlooringObservation:
         """
@@ -41,8 +53,9 @@ class ChipFlooringEnvironment(Environment):
         """
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self._reset_count += 1
-        self.canvas = Canvas(grid_size=16)
-        self.block  = []
+        self.canvas = Canvas(self._state.grid_size)
+        self.block = self.convert_global_netlist_to_blocks()
+        self.grid_size = 16
         self._state = ChipFlooringResponseState(
             episode_id=str(uuid4()),
             step_count=0,
@@ -55,6 +68,7 @@ class ChipFlooringEnvironment(Environment):
             done=False
         )
 
+         
     def step(self, action: ChipFlooringAction) -> ChipFlooringObservation:  # type: ignore[override]
         """
         Execute a step in the environment by echoing the message.
@@ -70,8 +84,7 @@ class ChipFlooringEnvironment(Environment):
         message = action.message
         length = len(message)
 
-        # Simple reward: longer messages get higher rewards
-        reward = length * 0.1
+        
         
         return ChipFlooringObservation(
             echoed_message=message,
@@ -100,6 +113,29 @@ class ChipFlooringEnvironment(Environment):
             done=self._state.done,
             reward=self.state.reward,
         )
+
+        '''
+    This Function is used to convert the global netlist to blocks
+    '''
+
+    def convert_global_netlist_to_blocks(self):
+        nodes = self.global_netlist["nodes"]
+        edges = self.global_netlist["edges"]
+
+        blocks = {}
+
+        for node in nodes:
+            block = Block(id=node["id"], height=node["height"], width=node["width"])
+            blocks[node["id"]] = block
+        
+        for edge in edges:
+            src = edge["from"]
+            dist = edge["to"]
+            weight = edge["weight"]
+            blocks[src].connect_block(blocks[dist], weight)
+            blocks[dist].connect_block(blocks[src], weight)
+
+        return list(blocks.values())
     
 
 
@@ -108,8 +144,8 @@ class Canvas:
     '''
         Initializing the grid type canvas in order to pricisely map the components in the canvas
     '''
-    def __init__(self,grid_size):
-        self.grid = [[0]*(grid_size) for _ in range(grid_size)]
+    def __init__(self):
+        self.grid = [[0]*(self._state.grid_size) for _ in range(self._state.grid_size)]
 
     '''
         Function for knowing whether the particular unit is available or not
@@ -122,42 +158,39 @@ class Canvas:
         Function to identify whether the component can be placed in the grid
     '''
 
-    def can_occupy(self,anchor_cords,width,height):
+    def can_occupy(self, anchor, width, height):
+        row, col = anchor
 
-        x,y = anchor_cords
-
-        if x >= self.grid_size or y>=self.grid.size:
+        # boundary check
+        if row + height > self.grid_size or col + width > self.grid_size:
             return False
 
+        # overlap check
         for dx in range(height):
             for dy in range(width):
-                if self.grid[x+dx][y+dy]==1:
+                if self.grid[row + dx][col + dy] != 0:
                     return False
-                
-        return True 
-    
 
-   
-    
-    
+        return True
+        
     '''
         Function for using the group of cords in the grid
     '''
-    def occupy_region(self,anchor_cords,width,height):
-        x,y = anchor_cords
+    def occupy_region(self, anchor, width, height, block_id):
+        row, col = anchor
         for dx in range(height):
-            for dy in range(width): 
-                self.grid[x+dx][y+dy]=1
+            for dy in range(width):
+                self.grid[row + dx][col + dy] = block_id
 
     '''
         Function for removing the group of cords in the grid
     '''
     
-    def remove_region(self,anchor_cords,width,height):
-        x,y=anchor_cords
+    def remove_region(self, anchor, width, height):
+        row, col = anchor
         for dx in range(height):
             for dy in range(width):
-                self.grid[x+dx][y+dy]=0
+                self.grid[row + dx][col + dy] = 0
 
 class Block:
     def __init__(self,id,height,width):
