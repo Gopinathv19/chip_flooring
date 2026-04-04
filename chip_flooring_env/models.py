@@ -10,23 +10,32 @@ Data models for the Chip Flooring Env Environment.
 The chip_flooring_env environment is a simple test environment that echoes back messages.
 """
 
-from openenv.core.env_server.types import Action, Observation
+from __future__ import annotations
+
+from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 
 
 class ChipFlooringAction(Action):
-    """Action for the Chip Flooring Env environment - just a message to echo."""
+    """ 
+    Action for the chip flooring environment 
+    """
 
-    message: str = Field(..., description="Message to echo back")
+    x : int = Field(default=0,description="Used to identify the x coordinate")
+    y : int = Field(default=0,description="Used to identify the y coordinate")
+    choosen_block_index : int = Field(default=0 ,description="The agent which picks the block from the remaining blocks")
+
+
+ 
 
 
 class ChipFlooringObservation(Observation):
-    """Observation from the Chip Flooring Env environment - the echoed message."""
+    """Observation from the Chip Flooring Env environment """
 
     canva_space : list[list[int]] = Field(default=[[0]],description="The grid type structure to represent the canva space")
-    current_block_structure : dict = Field(default={},description="Used to define the current block structure")
-    current_block_index : int = Field(default=0 ,description="Used to point in which block we are currently at")
-    total_block : int = Field(default=0,description="Used to Identify the total block")
+    remaining_blocks = Field(default={},description="Used to give the agent detailing abouth what are all the remaining block are there")
+    placed_blocks = Field(default={},description="Used to give the agent so far placed blocks")
+
 
 class ChipFlooringResponseState(State):
     "State for the Chip Flooring Environment to track the changes in the environment"
@@ -34,12 +43,13 @@ class ChipFlooringResponseState(State):
     episode_id : str = Field(default="",description="Used to identify the episode id")
     step_count : int = Field(default=0,description="Used to identify the step count")
     grid_size : int = Field(default=16,description="Used to identify the grid size")
-    grid : list[list[int]] = Field(default=[[0]],description="Used to identify the grid")
-    blocks : list[Block] = Field(default=[],description="Used to identify the blocks")
-    current_block_index : int = Field(default=0,description="Used to identify the current block index")
-    placed_blocks : list[Block] = Field(default=[],description="Used to identify the placed blocks")
-    remaining_blocks : list[Block] = Field(default=[],description="Used to identify the remaining blocks")
+    grid : list[list[int]] = Field(default=[[0]],description="Used to identify the grid")     
+    blocks : list[Block] = Field(default_factory=list,description="Used to identify the blocks")
+    placed_blocks : list[Block] = Field(default_factory=list,description="Used to identify the placed blocks")
+    remaining_blocks : list[Block] = Field(default_factory=list,description="Used to identify the remaining blocks")
     done : bool = Field(default=False,description="Used to identify if the episode is done")
+    reward : int = Field(default=0,description="This is used to update the model thinking and the trajectory")
+    
 
 
 
