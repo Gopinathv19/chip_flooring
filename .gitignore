@@ -1,2 +1,3 @@
 oenv/
 chip_flooring_env/__pycache__/
+.env.env

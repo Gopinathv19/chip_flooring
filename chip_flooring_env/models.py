@@ -12,6 +12,8 @@ The chip_flooring_env environment is a simple test environment that echoes back 
 
 from __future__ import annotations
 
+from typing import Any
+
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
 
@@ -33,8 +35,8 @@ class ChipFlooringObservation(Observation):
     """Observation from the Chip Flooring Env environment """
 
     canva_space : list[list[int]] = Field(default=[[0]],description="The grid type structure to represent the canva space")
-    remaining_blocks = Field(default={},description="Used to give the agent detailing abouth what are all the remaining block are there")
-    placed_blocks = Field(default={},description="Used to give the agent so far placed blocks")
+    remaining_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent detailing abouth what are all the remaining block are there")
+    placed_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent so far placed blocks")
 
 
 class ChipFlooringResponseState(State):
@@ -44,13 +46,12 @@ class ChipFlooringResponseState(State):
     step_count : int = Field(default=0,description="Used to identify the step count")
     grid_size : int = Field(default=16,description="Used to identify the grid size")
     grid : list[list[int]] = Field(default=[[0]],description="Used to identify the grid")     
-    blocks : list[Block] = Field(default_factory=list,description="Used to identify the blocks")
-    placed_blocks : list[Block] = Field(default_factory=list,description="Used to identify the placed blocks")
-    remaining_blocks : list[Block] = Field(default_factory=list,description="Used to identify the remaining blocks")
+    blocks : list[Any] = Field(default_factory=list,description="Used to identify the blocks")
+    placed_blocks : list[Any] = Field(default_factory=list,description="Used to identify the placed blocks")
+    remaining_blocks : list[Any] = Field(default_factory=list,description="Used to identify the remaining blocks")
     done : bool = Field(default=False,description="Used to identify if the episode is done")
     reward : int = Field(default=0,description="This is used to update the model thinking and the trajectory")
     
-
 
 
 

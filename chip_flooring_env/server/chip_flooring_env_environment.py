@@ -1,4 +1,5 @@
 from uuid import uuid4
+import string
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
@@ -14,23 +15,41 @@ class ChipFlooringEnvironment(Environment):
     def __init__(self):
         """Initialize the chip_flooring_env environment."""
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self.grid_size=16
+        self.grid_size=24
         self._reset_count = 0
         self.canvas = None
         self.blocks = []
         self.block_id_map = {}
-        self.global_netlist ={
-    "nodes": [
-        {"id": "A", "height": 2, "width": 3},
-        {"id": "B", "height": 1, "width": 2},
-        {"id": "C", "height": 2, "width": 2},
-    ],
-    "edges": [
-        {"from": "A", "to": "B", "weight": 1.0},
-        {"from": "A", "to": "C", "weight": 2.0},
-        {"from": "B", "to": "C", "weight": 1.5},
-    ]
-}
+        block_ids = list(string.ascii_uppercase[:24])
+        nodes = []
+        for idx, block_id in enumerate(block_ids):
+            height = 1 + (idx % 3)
+            width = 1 + ((idx + 1) % 3)
+            nodes.append({"id": block_id, "height": height, "width": width})
+
+        edges = []
+        for idx in range(len(block_ids) - 1):
+            edges.append(
+                {
+                    "from": block_ids[idx],
+                    "to": block_ids[idx + 1],
+                    "weight": 1.0 + (idx % 3) * 0.5,
+                }
+            )
+        for idx in range(len(block_ids) - 2):
+            if idx % 2 == 0:
+                edges.append(
+                    {
+                        "from": block_ids[idx],
+                        "to": block_ids[idx + 2],
+                        "weight": 0.75 + (idx % 4) * 0.25,
+                    }
+                )
+
+        self.global_netlist = {
+            "nodes": nodes,
+            "edges": edges,
+        }
 
     def reset(self) -> ChipFlooringObservation:
         """
