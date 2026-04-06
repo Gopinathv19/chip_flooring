@@ -3,7 +3,6 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
 from importlib import util as importlib_util
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,13 +13,40 @@ ROOT = Path(__file__).resolve().parent
 ENV_DIR = ROOT / "chip_flooring_env"
 SERVER_DIR = ENV_DIR / "server"
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key:
+            os.environ[key] = value
+
+
+load_env_file(ROOT / ".env")
+
+CONFIGURED_API_BASE_URL = os.getenv("API_BASE_URL")
+LOCAL_API_BASE_URL = os.getenv("LOCAL_API_BASE_URL", CONFIGURED_API_BASE_URL or "http://127.0.0.1:1234/v1")
+API_BASE_URL = CONFIGURED_API_BASE_URL or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY")
+USE_LOCAL = os.getenv("USE_LOCAL", "").strip().lower() in {"1", "true", "yes", "y", "on"} or API_BASE_URL.startswith(
+    ("http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")
+) or LOCAL_API_BASE_URL.startswith(("http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost"))
+if USE_LOCAL:
+    API_BASE_URL = LOCAL_API_BASE_URL
+else:
+    API_KEY = os.getenv("HF_TOKEN") or API_KEY
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 TASK_NAME = os.getenv("TASK_NAME", "chip-flooring")
 BENCHMARK = os.getenv("BENCHMARK", "chip_flooring_env")
-MAX_STEPS = int(os.getenv("MAX_STEPS", "16"))
+MAX_STEPS = int(os.getenv("MAX_STEPS", "100"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "120"))
 
@@ -66,16 +92,77 @@ def log_end(success: bool, steps: int, rewards: List[float]) -> None:
     )
 
 
-def build_prompt(step: int, grid: List[List[int]], remaining_blocks: List[Dict[str, Any]]) -> str:
+def summarize_history(history: List[Dict[str, Any]], limit: int = 8) -> List[Dict[str, Any]]:
+    return history[-limit:]
+
+
+def generate_candidate_actions(
+    env: ChipFlooringEnvironment,
+    remaining_blocks: List[Dict[str, Any]],
+    per_block_limit: int = 1,
+) -> List[Dict[str, Any]]:
+    if env.canvas is None:
+        return []
+
+    candidates: List[Dict[str, Any]] = []
+    sorted_blocks = sorted(
+        remaining_blocks,
+        key=lambda block: (-int(block["height"]) * int(block["width"]), str(block["id"])),
+    )
+
+    for block in sorted_blocks:
+        height = int(block["height"])
+        width = int(block["width"])
+        found = 0
+        for row in range(env.grid_size):
+            for col in range(env.grid_size):
+                if env.canvas.can_occupy((row, col), width, height):
+                    candidates.append(
+                        {
+                            "block_id": block["id"],
+                            "x": row,
+                            "y": col,
+                            "height": height,
+                            "width": width,
+                            "area": height * width,
+                        }
+                    )
+                    found += 1
+                    if found >= per_block_limit:
+                        break
+            if found >= per_block_limit:
+                break
+
+    return candidates
+
+
+def build_prompt(
+    step: int,
+    grid: List[List[int]],
+    placed_blocks: List[Dict[str, Any]],
+    remaining_blocks: List[Dict[str, Any]],
+    total_reward: float,
+    recent_history: List[Dict[str, Any]],
+    candidate_actions: List[Dict[str, Any]],
+    previous_failure: str = "",
+) -> str:
     return (
         "You are controlling a chip-flooring placement environment.\n"
         "Choose exactly one valid next placement.\n"
+        "Only choose from the candidate actions.\n"
+        "Never reuse a block from placed_blocks.\n"
         "Return JSON only with keys: block_id, x, y.\n"
         "Coordinates are zero-based indexing row, column.\n"
-        "Prefer the earliest valid placement for the earliest remaining block.\n\n"
+        "Prefer the best packing choice, usually the largest remaining block that fits earliest.\n"
+        "If a previous choice failed, avoid repeating it.\n\n"
         f"Step: {step}\n"
         f"Grid: {json.dumps(grid)}\n"
         f"Remaining blocks: {json.dumps(remaining_blocks)}\n"
+        f"Placed blocks: {json.dumps(placed_blocks)}\n"
+        f"Cumulative reward: {total_reward:.2f}\n"
+        f"Recent history: {json.dumps(summarize_history(recent_history))}\n"
+        f"Candidate actions: {json.dumps(candidate_actions)}\n"
+        + (f"Previous failure: {previous_failure}\n" if previous_failure else "")
     )
 
 
@@ -112,13 +199,24 @@ def model_suggest_action(
     client: OpenAI,
     step: int,
     grid: List[List[int]],
+    placed_blocks:List[Dict[str,Any]],
     remaining_blocks: List[Dict[str, Any]],
-    extra_instruction: str = "",
-) -> Optional[Dict[str, Any]]:
+    total_reward: float,
+    recent_history: List[Dict[str, Any]],
+    candidate_actions: List[Dict[str, Any]],
+    previous_failure: str = ""
+) -> Tuple[Optional[Dict[str,Any]],str]:
     try:
-        user_prompt = build_prompt(step, grid, remaining_blocks)
-        if extra_instruction:
-            user_prompt += f"\n{extra_instruction.strip()}\n"
+        user_prompt = build_prompt(
+            step,
+            grid,
+            placed_blocks,
+            remaining_blocks,
+            total_reward,
+            recent_history,
+            candidate_actions,
+            previous_failure,
+        )
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -132,35 +230,51 @@ def model_suggest_action(
             max_tokens=MAX_TOKENS,
         )
         content = completion.choices[0].message.content or ""
-        return extract_json_object(content)
-    except Exception:
-        return None
+        return extract_json_object(content),content
+    except Exception as exc:
+        print(f"[MODEL_ERROR] {type(exc).__name__}: {exc}", flush=True)
+        return None,""
 
 
 def normalize_action(
     env: ChipFlooringEnvironment,
     action_data: Optional[Dict[str, Any]],
-) -> Tuple[Optional[ChipFlooringAction], Optional[Dict[str, Any]]]:
-    remaining_ids = {block.id for block in env.state.remaining_blocks}
-    if action_data:
-        block_id = action_data.get("block_id")
-        x = action_data.get("x")
-        y = action_data.get("y")
-        if block_id in remaining_ids and isinstance(x, int) and isinstance(y, int):
-            index = next(
-                (i for i, block in enumerate(env.state.blocks) if block.id == block_id),
-                None,
-            )
-            if index is not None:
-                block = env.state.blocks[index]
-                if env.canvas.can_occupy((x, y), block.y, block.x):
-                    return ChipFlooringAction(x=x, y=y, choosen_block_index=index), {
-                        "block_id": block_id,
-                        "x": x,
-                        "y": y,
-                    }
+) -> Tuple[Optional[ChipFlooringAction], Optional[Dict[str, Any]],Optional[str]]:
+    
+    if not action_data:
+        return None,None,"Invalid_or_empty_model_output"
+    
+    block_id = action_data.get("block_id")
+    x=action_data.get("x")
+    y=action_data.get("y")
 
-    return None, None
+    if not isinstance(block_id,str) or not isinstance(x,int) or not isinstance(y,int):
+        return None,None,"invalid_action_fields"
+    
+    index=next((i for i, block in enumerate(env.state.blocks) if block.id==block_id),-1)
+
+    return(
+        ChipFlooringAction(x=x,y=y,choosen_block_index=index),
+        {"block_id":block_id,"x":x,"y":y},
+        None,
+    )
+
+
+def action_is_in_candidates(
+    action_repr: Optional[Dict[str, Any]],
+    candidate_actions: List[Dict[str, Any]],
+) -> bool:
+    if not action_repr:
+        return False
+    return any(
+        candidate["block_id"] == action_repr.get("block_id")
+        and int(candidate["x"]) == int(action_repr.get("x", -1))
+        and int(candidate["y"]) == int(action_repr.get("y", -1))
+        for candidate in candidate_actions
+    )
+    
+
+ 
 
 
 def action_to_string(action_repr: Optional[Dict[str, Any]]) -> str:
@@ -169,17 +283,65 @@ def action_to_string(action_repr: Optional[Dict[str, Any]]) -> str:
     return json.dumps(action_repr, separators=(",", ":"))
 
 
+def choose_fallback_action(
+    env: ChipFlooringEnvironment,
+    candidate_actions: List[Dict[str, Any]],
+) -> Tuple[Optional[ChipFlooringAction], Optional[Dict[str, Any]]]:
+    if not candidate_actions:
+        return None, None
+
+    candidate = candidate_actions[0]
+    index = next(
+        (i for i, block in enumerate(env.state.blocks) if block.id == candidate["block_id"]),
+        -1,
+    )
+    if index < 0:
+        return None, None
+
+    return (
+        ChipFlooringAction(
+            x=int(candidate["x"]),
+            y=int(candidate["y"]),
+            choosen_block_index=index,
+        ),
+        candidate,
+    )
+
+
+
+
 def main() -> None:
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if API_KEY else None
+    resolved_api_key = API_KEY or ("lm-studio" if USE_LOCAL else None)
+    client = OpenAI(base_url=API_BASE_URL, api_key=resolved_api_key) if resolved_api_key or USE_LOCAL else None
     env = ChipFlooringEnvironment()
     rewards: List[float] = []
+    total_reward = 0.0
     steps_taken = 0
     success = False
+    consecutive_invalids=0
+    previous_failure=""
+    recent_history: List[Dict[str, Any]] = []
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=TASK_NAME, env=BENCHMARK, model=f"{MODEL_NAME} ({'local' if USE_LOCAL else 'huggingface'})")
+    if client is None:
+        print(
+            "[WARN] No HF_TOKEN/API_KEY configured; the environment will reset, "
+            "but no actions will be generated.",
+            flush=True,
+        )
+    else:
+        print(
+            f"[CONFIG] provider={'local' if USE_LOCAL else 'huggingface'} base_url={API_BASE_URL} model={MODEL_NAME}",
+            flush=True,
+        )
 
     try:
-        env.reset()
+        obs = env.reset()
+        print(
+            f"[RESET] remaining_blocks={len(getattr(obs, 'remaining_blocks', []))} "
+            f"grid_size={len(env.canvas.grid) if env.canvas else 0}",
+            flush=True,
+        )
 
         for step in range(1, MAX_STEPS + 1):
             if not env.state.remaining_blocks:
@@ -187,6 +349,16 @@ def main() -> None:
                 break
 
             grid = env.canvas.grid if env.canvas else []
+            placed_blocks = [
+                {
+                    "id":block.id,
+                    "height":block.x,
+                    "width":block.y,
+                    "placed":block.placed,
+                    "position":block.position,
+                }
+                for block in env.state.placed_blocks
+            ]
             remaining_blocks = [
                 {
                     "id": block.id,
@@ -197,65 +369,105 @@ def main() -> None:
                 }
                 for block in env.state.remaining_blocks
             ]
+            candidate_actions = generate_candidate_actions(env, remaining_blocks, per_block_limit=1)
 
-            action = None
-            action_repr = None
-            attempt_hint = ""
-            for _attempt in range(3):
-                suggested = (
-                    model_suggest_action(
-                        client,
-                        step,
-                        grid,
-                        remaining_blocks,
-                        extra_instruction=attempt_hint,
+            suggested,raw_content = model_suggest_action(
+                client,
+                step,
+                grid,
+                placed_blocks,
+                remaining_blocks,
+                total_reward,
+                recent_history,
+                candidate_actions,
+                previous_failure=previous_failure,
+            )
+
+            action,action_repr,parse_error = normalize_action(env,suggested)
+            if action is not None and not action_is_in_candidates(action_repr, candidate_actions):
+                action = None
+                action_repr = None
+                parse_error = "model_action_not_in_candidates"
+
+            if action is None:
+                if raw_content:
+                    print(
+                        f"[MODEL_RAW] step={step} content={raw_content[:300]!r}",
+                        flush=True,
                     )
-                    if client
-                    else None
-                )
-                action, action_repr = normalize_action(env, suggested)
-                if action is not None and action_repr is not None:
-                    break
-                attempt_hint = (
-                    "The previous answer was invalid or could not be placed. "
-                    "Try again with a different valid JSON placement."
-                )
 
-            if action is None or action_repr is None:
+                fallback_action, fallback_repr = choose_fallback_action(env, candidate_actions)
+                if fallback_action is None:
+                    reward = -1.0
+                    rewards.append(reward)
+                    total_reward += reward
+                    steps_taken=step
+                    consecutive_invalids+=1
+                    previous_failure = parse_error or "invalid model output"
+                    recent_history.append(
+                        {
+                            "step": step,
+                            "action": None,
+                            "reward": reward,
+                            "done": False,
+                            "invalid_reason": previous_failure,
+                            "source": "model_failed_no_fallback",
+                        }
+                    )
+
+                    log_step(step=step,action="null",reward=reward,done=False,error=previous_failure)
+
+                    if consecutive_invalids > 5:
+                        print(f"More failures {consecutive_invalids}")
+
+                    continue
+
+                action = fallback_action
+                action_repr = fallback_repr
+                parse_error = "model_invalid_fallback_used"
+
+            result = env.step(action)
+            reward = float(getattr(result,"reward",0.0) or 0.0)
+            done = bool(getattr(result,"done",False))
+            invalid_reason = getattr(result,"invalid_reason",None)
+
+            rewards.append(reward)
+            total_reward += reward
+            steps_taken=step
+            recent_history.append(
+                {
+                    "step": step,
+                    "action": action_repr,
+                    "reward": reward,
+                    "done": done,
+                    "invalid_reason": invalid_reason,
+                    "source": "model" if parse_error is None else parse_error,
+                }
+            )
+            recent_history = recent_history[-24:]
+
+            log_step(
+                step=step,
+                action=action_to_string(action_repr),
+                reward=reward,
+                done=done,
+                error=invalid_reason,
+            )
+
+            if invalid_reason:
+                consecutive_invalids += 1
+                previous_failure = invalid_reason
+                if consecutive_invalids >= 10:
+                    print(f"More invalid actions count : {consecutive_invalids}")
+                continue
+
+            consecutive_invalids = 0
+            previous_failure = ""
+
+            if done and not env.state.remaining_blocks:
+                success = True
                 break
 
-            try:
-                result = env.step(action)
-                reward = float(getattr(result, "reward", 0.0) or 0.0)
-                done = bool(getattr(result, "done", False))
-                error = None
-                rewards.append(reward)
-                steps_taken = step
-                log_step(
-                    step=step,
-                    action=action_to_string(action_repr),
-                    reward=reward,
-                    done=done,
-                    error=error,
-                )
-                if done:
-                    success = len(env.state.remaining_blocks) == 0
-                    break
-            except Exception as exc:
-                log_step(
-                    step=step,
-                    action=action_to_string(action_repr),
-                    reward=0.0,
-                    done=False,
-                    error=str(exc),
-                )
-                steps_taken = step
-                break
-
-        if env.state.remaining_blocks == []:
-            success = True
-        elif not success:
-            success = len(env.state.remaining_blocks) == 0
     finally:
         close = getattr(env, "close", None)
         if callable(close):
@@ -264,6 +476,10 @@ def main() -> None:
             except Exception:
                 pass
         log_end(success=success, steps=steps_taken, rewards=rewards)
+        
+
+
+ 
 
 
 if __name__ == "__main__":

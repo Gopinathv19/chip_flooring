@@ -12,7 +12,7 @@ The chip_flooring_env environment is a simple test environment that echoes back 
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any,Optional
 
 from openenv.core.env_server.types import Action, Observation, State
 from pydantic import Field
@@ -37,6 +37,8 @@ class ChipFlooringObservation(Observation):
     canva_space : list[list[int]] = Field(default=[[0]],description="The grid type structure to represent the canva space")
     remaining_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent detailing abouth what are all the remaining block are there")
     placed_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent so far placed blocks")
+    invalid_reasons:Optional[str] = Field(default=None,description="Reason for the last action was rejected")
+
 
 
 class ChipFlooringResponseState(State):
@@ -50,7 +52,9 @@ class ChipFlooringResponseState(State):
     placed_blocks : list[Any] = Field(default_factory=list,description="Used to identify the placed blocks")
     remaining_blocks : list[Any] = Field(default_factory=list,description="Used to identify the remaining blocks")
     done : bool = Field(default=False,description="Used to identify if the episode is done")
-    reward : int = Field(default=0,description="This is used to update the model thinking and the trajectory")
+    reward : float = Field(default=0.0,description="This is used to update the model thinking and the trajectory")
+    trajectory: list[Any] = Field(default_factory=list,description="used to map the entire trajectory of the agent decission")
+    
     
 
 

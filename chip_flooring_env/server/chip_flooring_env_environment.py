@@ -1,5 +1,6 @@
 from uuid import uuid4
 import string
+from typing import Optional
 
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
@@ -8,6 +9,8 @@ try:
     from ..models import ChipFlooringAction, ChipFlooringObservation, ChipFlooringResponseState
 except ImportError:
     from models import ChipFlooringAction, ChipFlooringObservation, ChipFlooringResponseState
+
+
 
 
 class ChipFlooringEnvironment(Environment):
@@ -50,6 +53,77 @@ class ChipFlooringEnvironment(Environment):
             "nodes": nodes,
             "edges": edges,
         }
+        self.global_netlist = {
+            "nodes": [
+                {"id": "A", "height": 2, "width": 1},
+                {"id": "B", "height": 3, "width": 1},
+                {"id": "C", "height": 1, "width": 4},
+                {"id": "D", "height": 2, "width": 2},
+                {"id": "E", "height": 1, "width": 3},
+                {"id": "F", "height": 3, "width": 2},
+                {"id": "G", "height": 2, "width": 3},
+                {"id": "H", "height": 1, "width": 2},
+                {"id": "I", "height": 4, "width": 1},
+                {"id": "J", "height": 2, "width": 4},
+                {"id": "K", "height": 3, "width": 2},
+                {"id": "L", "height": 1, "width": 1},
+                {"id": "M", "height": 2, "width": 1},
+                {"id": "N", "height": 1, "width": 2},
+                {"id": "O", "height": 3, "width": 3},
+                {"id": "P", "height": 2, "width": 2},
+                {"id": "Q", "height": 1, "width": 5},
+                {"id": "R", "height": 4, "width": 2},
+                {"id": "S", "height": 2, "width": 4},
+                {"id": "T", "height": 1, "width": 3},
+                {"id": "U", "height": 3, "width": 1},
+                {"id": "V", "height": 2, "width": 3},
+                {"id": "W", "height": 1, "width": 2},
+                {"id": "X", "height": 3, "width": 4},
+            ],
+            "edges": [
+                {"from": "A", "to": "F", "weight": 2.4},
+                {"from": "A", "to": "C", "weight": 1.1},
+                {"from": "B", "to": "G", "weight": 1.8},
+                {"from": "B", "to": "D", "weight": 0.9},
+                {"from": "C", "to": "H", "weight": 2.1},
+                {"from": "C", "to": "J", "weight": 1.4},
+                {"from": "D", "to": "I", "weight": 1.7},
+                {"from": "D", "to": "K", "weight": 0.8},
+                {"from": "E", "to": "J", "weight": 2.6},
+                {"from": "E", "to": "L", "weight": 1.0},
+                {"from": "F", "to": "M", "weight": 1.2},
+                {"from": "F", "to": "N", "weight": 2.0},
+                {"from": "G", "to": "O", "weight": 2.8},
+                {"from": "G", "to": "P", "weight": 1.3},
+                {"from": "H", "to": "Q", "weight": 1.6},
+                {"from": "I", "to": "R", "weight": 2.2},
+                {"from": "J", "to": "S", "weight": 2.9},
+                {"from": "K", "to": "T", "weight": 1.5},
+                {"from": "L", "to": "U", "weight": 0.7},
+                {"from": "M", "to": "V", "weight": 1.9},
+                {"from": "N", "to": "W", "weight": 1.4},
+                {"from": "O", "to": "X", "weight": 3.1},
+                {"from": "P", "to": "Q", "weight": 1.05},
+                {"from": "Q", "to": "R", "weight": 2.35},
+                {"from": "R", "to": "S", "weight": 1.65},
+                {"from": "S", "to": "T", "weight": 0.95},
+                {"from": "T", "to": "U", "weight": 1.25},
+                {"from": "U", "to": "V", "weight": 2.15},
+                {"from": "V", "to": "W", "weight": 1.35},
+                {"from": "W", "to": "X", "weight": 2.45},
+                {"from": "B", "to": "E", "weight": 1.75},
+                {"from": "D", "to": "G", "weight": 2.05},
+                {"from": "F", "to": "J", "weight": 1.55},
+                {"from": "H", "to": "L", "weight": 0.85},
+                {"from": "I", "to": "N", "weight": 1.45},
+                {"from": "K", "to": "O", "weight": 2.25},
+                {"from": "M", "to": "Q", "weight": 1.95},
+                {"from": "P", "to": "T", "weight": 1.15},
+                {"from": "R", "to": "V", "weight": 2.55},
+                {"from": "S", "to": "X", "weight": 2.75},
+            ],
+        }
+
 
     def reset(self) -> ChipFlooringObservation:
         """
@@ -76,43 +150,66 @@ class ChipFlooringEnvironment(Environment):
             reward=0
         )
 
-        return ChipFlooringObservation(
-            canva_space=self.canvas.grid,
-            remaining_blocks = [self._block_to_dict(b) for b in self._state.remaining_blocks],
-            placed_blocks = [],
-            done=False,
-            reward=0
-        )
+        return self._build_observation()
 
          
     def step(self, action: ChipFlooringAction) -> ChipFlooringObservation:  # type: ignore[override]
  
         self._state.step_count += 1
+        self._state.reward=0.0
+        self._state.done=False
+        
+        invalid_reasons = None
         x = action.x
         y = action.y
         current_block_index = action.choosen_block_index
-        
-        if current_block_index < len(self._state.blocks):
+
+        if not isinstance(current_block_index,int) or current_block_index < 0 or current_block_index >= len(self._state.blocks):
+            invalid_reasons = "Invalid Block Index correclty choose the block index with in the range"
+            self._state.reward=-0.8
+        else:
             block = self._state.blocks[current_block_index]
-            if self.canvas.can_occupy((x, y), block.y, block.x):
+            
+            if block not in self._state.remaining_blocks:
+                invalid_reasons="The selected block is not in the ramining block properly choose the correct block"
+                self._state.reward=-0.6
+            elif not self.canvas.can_occupy((x,y),block.y,block.x):
+                invalid_reasons = "The given possition cannot be occupied check the canvas once again for the right placment"
+                self._state.reward = -0.5
+
+            else:
                 block_num = self.block_id_map[block.id]
-                self.canvas.occupy_region((x, y), block.y, block.x, block_num)
+                self.canvas.occupy_region((x,y),block.y,block.x,block_num)
+                block.placed=True
+                block.position=(x,y)
                 self._state.placed_blocks.append(block)
                 self._state.remaining_blocks.remove(block)
-                self._state.reward = 1
+                self._state.reward = 0.2 + (0.8 if len(self._state.remaining_blocks)==0 else 0.0)
                 self._state.done = len(self._state.remaining_blocks) == 0
-            else:
-                self._state.reward = 0
-                self._state.done = False
-        else:
-            self._state.reward = 0
-            self._state.done = len(self._state.remaining_blocks) == 0
-             
-
-        return ChipFlooringObservation(
-            done= self._state.done,
-            reward=self._state.reward
+        
+        self._state.grid = self.canvas.grid
+        self._state.trajectory.append(
+            {
+                "step_count": self._state.step_count,
+                "action": {
+                    "x": x,
+                    "y": y,
+                    "choosen_block_index": current_block_index,
+                },
+                "reward": self._state.reward,
+                "done": self._state.done,
+                "invalid_reason": invalid_reasons,
+                "remaining_blocks": [b.id for b in self._state.remaining_blocks],
+                "placed_blocks": [b.id for b in self._state.placed_blocks],
+            }
         )
+
+        return self._build_observation(invalid_reason=invalid_reasons)
+            
+
+
+        
+ 
 
     @property
     def state(self) -> State:
@@ -157,6 +254,16 @@ class ChipFlooringEnvironment(Environment):
             "placed":block.placed,
             "position":block.position
         }
+    
+    def _build_observation(self,invalid_reason: Optional[str]=None)->ChipFlooringObservation:
+        return ChipFlooringObservation(
+            canva_space=self.canvas.grid,
+            remaining_blocks=[self._block_to_dict(b) for b in self._state.remaining_blocks],
+            placed_blocks=[self._block_to_dict(b) for b in self._state.placed_blocks],
+            done=self._state.done,
+            reward=self._state.reward,
+            invalid_reasons=invalid_reason,
+        )
     
 
 
