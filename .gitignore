@@ -1,3 +1,6 @@
+__pycache__/
+*.pyc
+.env
 oenv/
 chip_flooring_env/__pycache__/
-.env
+chip_flooring_env/server/__pycache__/
