@@ -28,6 +28,8 @@ Usage:
     python -m server.app
 """
 
+import os
+
 try:
     from openenv.core.env_server.http_server import create_app
 except Exception as e:  # pragma: no cover
@@ -41,6 +43,7 @@ try:
 except ModuleNotFoundError:
     from models import ChipFlooringAction, ChipFlooringObservation
     from server.chip_flooring_env_environment import ChipFlooringEnvironment
+from fastapi import Body
 
 
 # Create the app with web interface and README integration
@@ -51,6 +54,58 @@ app = create_app(
     env_name="chip_flooring_env",
     max_concurrent_envs=1,  # increase this number to allow more concurrent WebSocket sessions
 )
+
+
+def _task_summary() -> list[dict[str, object]]:
+    env = ChipFlooringEnvironment()
+    tasks: list[dict[str, object]] = []
+    for task_name, config in env.task_configs.items():
+        tasks.append(
+            {
+                "id": task_name,
+                "difficulty": task_name,
+                "description": (
+                    f"Place {len(config['nodes'])} connected blocks on a {config['grid_size']}x{config['grid_size']} grid "
+                    f"while minimizing wirelength and keeping the placement legal."
+                ),
+                "grid_size": config["grid_size"],
+                "block_count": len(config["nodes"]),
+                "max_steps": len(config["nodes"]),
+                "score_range": [0.0, 1.0],
+                "grader": {
+                    "type": "deterministic",
+                    "source": "environment_reward",
+                    "normalization": "completion_plus_hpwl",
+                },
+            }
+        )
+    return tasks
+
+
+@app.get("/tasks")
+def list_tasks():
+    return {"tasks": _task_summary()}
+
+
+@app.post("/grader")
+def grader(payload: dict | None = Body(default=None)):
+    payload = payload or {}
+    task_name = str(
+        payload.get("task_name")
+        or payload.get("task_id")
+        or os.getenv("TASK_NAME", "hard")
+    ).strip().lower() or "hard"
+    raw_score = payload.get("score", payload.get("reward", 0.0))
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        score = 0.0
+    score = max(0.0, min(1.0, score))
+    return {
+        "task_name": task_name,
+        "score": score,
+        "grader_type": "deterministic",
+    }
 
 
 def main(host: str = "0.0.0.0", port: int = 8000):
@@ -81,4 +136,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
-    main(port=args.port)
+    if args.port == 8000:
+        main()
+    else:
+        main(port=args.port)

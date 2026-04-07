@@ -1,4 +1,5 @@
 from uuid import uuid4
+import os
 from typing import Optional
 
 from openenv.core.env_server.interfaces import Environment
@@ -17,7 +18,8 @@ class ChipFlooringEnvironment(Environment):
     def __init__(self):
         """Initialize the chip_flooring_env environment."""
         self._state = State(episode_id=str(uuid4()), step_count=0)
-        self.grid_size=24
+        self.task_name = os.getenv("TASK_NAME", "hard").strip().lower() or "hard"
+        self.grid_size = 24
         self.hpwl_weight = 0.25
         self.valid_placement_bonus = 0.05
         self.final_completion_bonus = 0.75
@@ -29,47 +31,9 @@ class ChipFlooringEnvironment(Environment):
         self.blocks = []
         self.block_id_map = {}
         self._block_lookup = {}
-        # Standard 15-block benchmark for v1/v2 evaluation.
-        self.global_netlist = {
-            "nodes": [
-                {"id": "A", "height": 2, "width": 1},
-                {"id": "B", "height": 3, "width": 1},
-                {"id": "C", "height": 1, "width": 4},
-                {"id": "D", "height": 2, "width": 2},
-                {"id": "E", "height": 1, "width": 3},
-                {"id": "F", "height": 3, "width": 2},
-                {"id": "G", "height": 2, "width": 3},
-                {"id": "H", "height": 1, "width": 2},
-                {"id": "I", "height": 4, "width": 1},
-                {"id": "J", "height": 2, "width": 4},
-                {"id": "K", "height": 3, "width": 2},
-                {"id": "L", "height": 1, "width": 1},
-                {"id": "M", "height": 2, "width": 1},
-                {"id": "N", "height": 1, "width": 2},
-                {"id": "O", "height": 3, "width": 3},
-            ],
-            "edges": [
-                {"from": "A", "to": "F", "weight": 2.4},
-                {"from": "A", "to": "C", "weight": 1.1},
-                {"from": "B", "to": "G", "weight": 1.8},
-                {"from": "B", "to": "D", "weight": 0.9},
-                {"from": "C", "to": "H", "weight": 2.1},
-                {"from": "C", "to": "J", "weight": 1.4},
-                {"from": "D", "to": "I", "weight": 1.7},
-                {"from": "D", "to": "K", "weight": 0.8},
-                {"from": "E", "to": "J", "weight": 2.6},
-                {"from": "E", "to": "L", "weight": 1.0},
-                {"from": "F", "to": "M", "weight": 1.2},
-                {"from": "F", "to": "N", "weight": 2.0},
-                {"from": "G", "to": "O", "weight": 2.8},
-                {"from": "B", "to": "E", "weight": 1.75},
-                {"from": "D", "to": "G", "weight": 2.05},
-                {"from": "F", "to": "J", "weight": 1.55},
-                {"from": "H", "to": "L", "weight": 0.85},
-                {"from": "I", "to": "N", "weight": 1.45},
-                {"from": "K", "to": "O", "weight": 2.25},
-            ],
-        }
+        self.task_configs = self._build_task_configs()
+        self.global_netlist = self._select_task_netlist(self.task_name)
+        self.grid_size = self._select_task_grid_size(self.task_name)
  
 
 
@@ -99,6 +63,7 @@ class ChipFlooringEnvironment(Environment):
             reward=0,
             current_hpwl=0.0,
             delta_hpwl=0.0,
+            task_name=self.task_name,
         )
 
         return self._build_observation()
@@ -163,6 +128,7 @@ class ChipFlooringEnvironment(Environment):
                 "invalid_reason": invalid_reasons,
                 "current_hpwl": self._state.current_hpwl,
                 "delta_hpwl": self._state.delta_hpwl,
+                "task_name": self._state.task_name,
                 "remaining_blocks": [b.id for b in self._state.remaining_blocks],
                 "placed_blocks": [b.id for b in self._state.placed_blocks],
             }
@@ -442,10 +408,112 @@ class ChipFlooringEnvironment(Environment):
             current_hpwl=self._state.current_hpwl,
             delta_hpwl=self._state.delta_hpwl,
             placed_block_count=len(self._state.placed_blocks),
+            task_name=self._state.task_name,
             done=self._state.done,
             reward=self._state.reward,
             invalid_reasons=invalid_reason,
         )
+
+    def _build_task_configs(self):
+        return {
+            "easy": {
+                "grid_size": 12,
+                "nodes": [
+                    {"id": "A", "height": 2, "width": 1},
+                    {"id": "B", "height": 2, "width": 2},
+                    {"id": "C", "height": 1, "width": 3},
+                    {"id": "D", "height": 2, "width": 1},
+                    {"id": "E", "height": 1, "width": 2},
+                ],
+                "edges": [
+                    {"from": "A", "to": "B", "weight": 1.4},
+                    {"from": "A", "to": "C", "weight": 1.1},
+                    {"from": "B", "to": "D", "weight": 1.6},
+                    {"from": "C", "to": "E", "weight": 1.3},
+                    {"from": "B", "to": "E", "weight": 0.9},
+                ],
+            },
+            "medium": {
+                "grid_size": 18,
+                "nodes": [
+                    {"id": "A", "height": 2, "width": 1},
+                    {"id": "B", "height": 3, "width": 1},
+                    {"id": "C", "height": 1, "width": 4},
+                    {"id": "D", "height": 2, "width": 2},
+                    {"id": "E", "height": 1, "width": 3},
+                    {"id": "F", "height": 3, "width": 2},
+                    {"id": "G", "height": 2, "width": 3},
+                    {"id": "H", "height": 1, "width": 2},
+                    {"id": "I", "height": 4, "width": 1},
+                    {"id": "J", "height": 2, "width": 4},
+                ],
+                "edges": [
+                    {"from": "A", "to": "F", "weight": 2.4},
+                    {"from": "A", "to": "C", "weight": 1.1},
+                    {"from": "B", "to": "G", "weight": 1.8},
+                    {"from": "B", "to": "D", "weight": 0.9},
+                    {"from": "C", "to": "H", "weight": 2.1},
+                    {"from": "C", "to": "J", "weight": 1.4},
+                    {"from": "D", "to": "I", "weight": 1.7},
+                    {"from": "E", "to": "J", "weight": 2.6},
+                    {"from": "B", "to": "E", "weight": 1.75},
+                    {"from": "D", "to": "G", "weight": 2.05},
+                    {"from": "F", "to": "J", "weight": 1.55},
+                ],
+            },
+            "hard": {
+                "grid_size": 24,
+                "nodes": [
+                    {"id": "A", "height": 2, "width": 1},
+                    {"id": "B", "height": 3, "width": 1},
+                    {"id": "C", "height": 1, "width": 4},
+                    {"id": "D", "height": 2, "width": 2},
+                    {"id": "E", "height": 1, "width": 3},
+                    {"id": "F", "height": 3, "width": 2},
+                    {"id": "G", "height": 2, "width": 3},
+                    {"id": "H", "height": 1, "width": 2},
+                    {"id": "I", "height": 4, "width": 1},
+                    {"id": "J", "height": 2, "width": 4},
+                    {"id": "K", "height": 3, "width": 2},
+                    {"id": "L", "height": 1, "width": 1},
+                    {"id": "M", "height": 2, "width": 1},
+                    {"id": "N", "height": 1, "width": 2},
+                    {"id": "O", "height": 3, "width": 3},
+                ],
+                "edges": [
+                    {"from": "A", "to": "F", "weight": 2.4},
+                    {"from": "A", "to": "C", "weight": 1.1},
+                    {"from": "B", "to": "G", "weight": 1.8},
+                    {"from": "B", "to": "D", "weight": 0.9},
+                    {"from": "C", "to": "H", "weight": 2.1},
+                    {"from": "C", "to": "J", "weight": 1.4},
+                    {"from": "D", "to": "I", "weight": 1.7},
+                    {"from": "D", "to": "K", "weight": 0.8},
+                    {"from": "E", "to": "J", "weight": 2.6},
+                    {"from": "E", "to": "L", "weight": 1.0},
+                    {"from": "F", "to": "M", "weight": 1.2},
+                    {"from": "F", "to": "N", "weight": 2.0},
+                    {"from": "G", "to": "O", "weight": 2.8},
+                    {"from": "B", "to": "E", "weight": 1.75},
+                    {"from": "D", "to": "G", "weight": 2.05},
+                    {"from": "F", "to": "J", "weight": 1.55},
+                    {"from": "H", "to": "L", "weight": 0.85},
+                    {"from": "I", "to": "N", "weight": 1.45},
+                    {"from": "K", "to": "O", "weight": 2.25},
+                ],
+            },
+        }
+
+    def _select_task_netlist(self, task_name: str):
+        config = self.task_configs.get(task_name, self.task_configs["hard"])
+        return {
+            "nodes": list(config["nodes"]),
+            "edges": list(config["edges"]),
+        }
+
+    def _select_task_grid_size(self, task_name: str) -> int:
+        config = self.task_configs.get(task_name, self.task_configs["hard"])
+        return int(config["grid_size"])
     
 
 

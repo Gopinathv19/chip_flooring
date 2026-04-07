@@ -44,6 +44,7 @@ class ChipFlooringObservation(Observation):
     current_hpwl : float = Field(default=0.0,description="Current total wirelength cost for all fully placed connections")
     delta_hpwl : float = Field(default=0.0,description="Wirelength cost added by the latest placement")
     placed_block_count : int = Field(default=0,description="Number of blocks already placed")
+    task_name : str = Field(default="hard",description="Current task difficulty name")
     invalid_reasons:Optional[str] = Field(default=None,description="Reason for the last action was rejected")
 
 
@@ -62,7 +63,7 @@ class ChipFlooringResponseState(State):
     reward : float = Field(default=0.0,description="This is used to update the model thinking and the trajectory")
     current_hpwl : float = Field(default=0.0,description="Current total HPWL score for the placed layout")
     delta_hpwl : float = Field(default=0.0,description="HPWL cost added by the latest placement")
+    task_name : str = Field(default="hard",description="Current difficulty task name")
     trajectory: list[Any] = Field(default_factory=list,description="used to map the entire trajectory of the agent decission")
     
     
-

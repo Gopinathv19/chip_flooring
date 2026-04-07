@@ -80,6 +80,7 @@ class ChipFlooringEnv(
             current_hpwl=obs_data.get("current_hpwl", 0.0),
             delta_hpwl=obs_data.get("delta_hpwl", 0.0),
             placed_block_count=obs_data.get("placed_block_count", 0),
+            task_name=obs_data.get("task_name", "hard"),
             invalid_reasons=obs_data.get("invalid_reasons"),
             done=payload.get("done", False),
             reward=payload.get("reward"),
