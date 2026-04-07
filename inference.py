@@ -96,6 +96,29 @@ def summarize_history(history: List[Dict[str, Any]], limit: int = 8) -> List[Dic
     return history[-limit:]
 
 
+def compact_block_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": summary.get("id"),
+        "priority": round(float(summary.get("priority_score", 0.0)), 3),
+        "placed_neighbors": [
+            {
+                "id": neighbor.get("id"),
+                "weight": round(float(neighbor.get("weight", 0.0)), 3),
+                "pos": neighbor.get("position"),
+            }
+            for neighbor in (summary.get("placed_neighbors") or [])[:3]
+        ],
+        "strongest": [
+            {
+                "id": neighbor.get("id"),
+                "weight": round(float(neighbor.get("weight", 0.0)), 3),
+                "placed": bool(neighbor.get("placed")),
+            }
+            for neighbor in (summary.get("strongest_neighbors") or [])[:3]
+        ],
+    }
+
+
 def generate_candidate_actions(
     env: ChipFlooringEnvironment,
     remaining_blocks: List[Dict[str, Any]],
@@ -138,31 +161,32 @@ def generate_candidate_actions(
 
 def build_prompt(
     step: int,
-    grid: List[List[int]],
     placed_blocks: List[Dict[str, Any]],
     remaining_blocks: List[Dict[str, Any]],
+    block_summaries: List[Dict[str, Any]],
+    placement_focus: Optional[Dict[str, Any]],
+    density_map: List[List[float]],
     total_reward: float,
     recent_history: List[Dict[str, Any]],
     candidate_actions: List[Dict[str, Any]],
     previous_failure: str = "",
 ) -> str:
+    focus_compact = compact_block_summary(placement_focus) if placement_focus else None
+    summaries_compact = [compact_block_summary(summary) for summary in block_summaries[:6]]
+    candidates_compact = candidate_actions[:8]
     return (
-        "You are controlling a chip-flooring placement environment.\n"
-        "Choose exactly one valid next placement.\n"
-        "Only choose from the candidate actions.\n"
-        "Never reuse a block from placed_blocks.\n"
-        "Return JSON only with keys: block_id, x, y.\n"
-        "Coordinates are zero-based indexing row, column.\n"
-        "Prefer the best packing choice, usually the largest remaining block that fits earliest.\n"
-        "If a previous choice failed, avoid repeating it.\n\n"
-        f"Step: {step}\n"
-        f"Grid: {json.dumps(grid)}\n"
-        f"Remaining blocks: {json.dumps(remaining_blocks)}\n"
-        f"Placed blocks: {json.dumps(placed_blocks)}\n"
-        f"Cumulative reward: {total_reward:.2f}\n"
-        f"Recent history: {json.dumps(summarize_history(recent_history))}\n"
-        f"Candidate actions: {json.dumps(candidate_actions)}\n"
-        + (f"Previous failure: {previous_failure}\n" if previous_failure else "")
+        "Choose one placement from the candidate actions.\n"
+        "Return JSON only: {\"block_id\":\"...\",\"x\":0,\"y\":0}.\n"
+        "Prefer the action that best reduces wirelength while staying legal.\n"
+        "Use the focus block, placed neighbor positions, and candidate scores.\n\n"
+        f"step={step}\n"
+        f"placed_count={len(placed_blocks)} remaining_count={len(remaining_blocks)} total_reward={total_reward:.2f}\n"
+        f"focus={json.dumps(focus_compact)}\n"
+        f"summaries={json.dumps(summaries_compact)}\n"
+        f"density={json.dumps(density_map)}\n"
+        f"recent={json.dumps(summarize_history(recent_history, limit=4))}\n"
+        f"candidates={json.dumps(candidates_compact)}\n"
+        + (f"failure={previous_failure}\n" if previous_failure else "")
     )
 
 
@@ -201,6 +225,9 @@ def model_suggest_action(
     grid: List[List[int]],
     placed_blocks:List[Dict[str,Any]],
     remaining_blocks: List[Dict[str, Any]],
+    block_summaries: List[Dict[str, Any]],
+    placement_focus: Optional[Dict[str, Any]],
+    density_map: List[List[float]],
     total_reward: float,
     recent_history: List[Dict[str, Any]],
     candidate_actions: List[Dict[str, Any]],
@@ -209,9 +236,11 @@ def model_suggest_action(
     try:
         user_prompt = build_prompt(
             step,
-            grid,
             placed_blocks,
             remaining_blocks,
+            block_summaries,
+            placement_focus,
+            density_map,
             total_reward,
             recent_history,
             candidate_actions,
@@ -222,7 +251,7 @@ def model_suggest_action(
             messages=[
                 {
                     "role": "system",
-                    "content": "Return a single JSON object with block_id, x, and y only.",
+                    "content": "Return only one JSON object with block_id, x, and y.",
                 },
                 {"role": "user", "content": user_prompt},
             ],
@@ -348,28 +377,15 @@ def main() -> None:
                 success = True
                 break
 
-            grid = env.canvas.grid if env.canvas else []
-            placed_blocks = [
-                {
-                    "id":block.id,
-                    "height":block.x,
-                    "width":block.y,
-                    "placed":block.placed,
-                    "position":block.position,
-                }
-                for block in env.state.placed_blocks
-            ]
-            remaining_blocks = [
-                {
-                    "id": block.id,
-                    "height": block.x,
-                    "width": block.y,
-                    "placed": block.placed,
-                    "position": block.position,
-                }
-                for block in env.state.remaining_blocks
-            ]
-            candidate_actions = generate_candidate_actions(env, remaining_blocks, per_block_limit=1)
+            grid = getattr(obs, "canva_space", env.canvas.grid if env.canvas else [])
+            placed_blocks = getattr(obs, "placed_blocks", [])
+            remaining_blocks = getattr(obs, "remaining_blocks", [])
+            block_summaries = getattr(obs, "block_summaries", [])
+            placement_focus = getattr(obs, "placement_focus", None)
+            density_map = getattr(obs, "density_map", [])
+            candidate_actions = getattr(obs, "candidate_positions", [])
+            if not candidate_actions:
+                candidate_actions = generate_candidate_actions(env, remaining_blocks, per_block_limit=1)
 
             suggested,raw_content = model_suggest_action(
                 client,
@@ -377,6 +393,9 @@ def main() -> None:
                 grid,
                 placed_blocks,
                 remaining_blocks,
+                block_summaries,
+                placement_focus,
+                density_map,
                 total_reward,
                 recent_history,
                 candidate_actions,
@@ -427,6 +446,7 @@ def main() -> None:
                 parse_error = "model_invalid_fallback_used"
 
             result = env.step(action)
+            obs = result
             reward = float(getattr(result,"reward",0.0) or 0.0)
             done = bool(getattr(result,"done",False))
             invalid_reason = getattr(result,"invalid_reason",None)

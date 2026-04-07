@@ -37,6 +37,10 @@ class ChipFlooringObservation(Observation):
     canva_space : list[list[int]] = Field(default=[[0]],description="The grid type structure to represent the canva space")
     remaining_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent detailing abouth what are all the remaining block are there")
     placed_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent so far placed blocks")
+    block_summaries : list[Any] = Field(default_factory=list,description="Connectivity summary for remaining blocks")
+    candidate_positions : list[Any] = Field(default_factory=list,description="Small scored set of legal placement candidates")
+    density_map : list[list[float]] = Field(default_factory=list,description="Coarse occupancy map for congestion awareness")
+    placement_focus : Optional[dict[str, Any]] = Field(default=None,description="Most important block to place next")
     current_hpwl : float = Field(default=0.0,description="Current total wirelength cost for all fully placed connections")
     delta_hpwl : float = Field(default=0.0,description="Wirelength cost added by the latest placement")
     placed_block_count : int = Field(default=0,description="Number of blocks already placed")
@@ -61,5 +65,4 @@ class ChipFlooringResponseState(State):
     trajectory: list[Any] = Field(default_factory=list,description="used to map the entire trajectory of the agent decission")
     
     
-
 

@@ -18,7 +18,12 @@ class ChipFlooringEnvironment(Environment):
         """Initialize the chip_flooring_env environment."""
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self.grid_size=24
-        self.hpwl_weight = 0.03
+        self.hpwl_weight = 0.25
+        self.valid_placement_bonus = 0.05
+        self.final_completion_bonus = 0.75
+        self.invalid_block_penalty = -0.8
+        self.invalid_overlap_penalty = -0.6
+        self.invalid_bounds_penalty = -0.5
         self._reset_count = 0
         self.canvas = None
         self.blocks = []
@@ -113,16 +118,16 @@ class ChipFlooringEnvironment(Environment):
 
         if not isinstance(current_block_index,int) or current_block_index < 0 or current_block_index >= len(self._state.blocks):
             invalid_reasons = "Invalid Block Index correclty choose the block index with in the range"
-            self._state.reward=-0.8
+            self._state.reward=self.invalid_block_penalty
         else:
             block = self._state.blocks[current_block_index]
             
             if block not in self._state.remaining_blocks:
                 invalid_reasons="The selected block is not in the ramining block properly choose the correct block"
-                self._state.reward=-0.6
+                self._state.reward=self.invalid_block_penalty
             elif not self.canvas.can_occupy((x,y),block.y,block.x):
                 invalid_reasons = "The given possition cannot be occupied check the canvas once again for the right placment"
-                self._state.reward = -0.5
+                self._state.reward = self.invalid_bounds_penalty
 
             else:
                 block_num = self.block_id_map[block.id]
@@ -132,12 +137,17 @@ class ChipFlooringEnvironment(Environment):
                 self._state.placed_blocks.append(block)
                 self._state.remaining_blocks.remove(block)
                 incremental_hpwl = self._compute_incremental_hpwl(block)
+                placed_neighbor_weight = self._placed_neighbor_weight(block)
                 self._state.delta_hpwl = incremental_hpwl
                 self._state.current_hpwl = self._compute_total_hpwl()
-                self._state.reward = 0.2 - (self.hpwl_weight * incremental_hpwl)
+                self._state.reward = (
+                    self.valid_placement_bonus
+                    + (0.02 * placed_neighbor_weight)
+                    - (self.hpwl_weight * incremental_hpwl)
+                )
                 self._state.done = len(self._state.remaining_blocks) == 0
                 if self._state.done:
-                    self._state.reward += 0.8 - (self.hpwl_weight * self._state.current_hpwl)
+                    self._state.reward += self.final_completion_bonus - (self.hpwl_weight * self._state.current_hpwl)
         
         self._state.grid = self.canvas.grid
         self._state.trajectory.append(
@@ -232,6 +242,14 @@ class ChipFlooringEnvironment(Environment):
 
         return total
 
+    def _placed_neighbor_weight(self, placed_block: "Block") -> float:
+        total = 0.0
+        for neighbor_id, weight in placed_block.get_internal_netlist().items():
+            neighbor = self._block_lookup.get(neighbor_id)
+            if neighbor is not None and neighbor.placed:
+                total += weight
+        return total
+
     def _compute_total_hpwl(self) -> float:
         """
         Compute the total weighted HPWL for the currently placed layout.
@@ -251,6 +269,155 @@ class ChipFlooringEnvironment(Environment):
             total += edge["weight"] * self._manhattan_distance(src_center, dst_center) / self.grid_size
 
         return total
+
+    def _block_priority_score(self, block: "Block") -> float:
+        placed_neighbor_weight = 0.0
+        placed_neighbor_count = 0
+        for neighbor_id, weight in block.get_internal_netlist().items():
+            neighbor = self._block_lookup.get(neighbor_id)
+            if neighbor is not None and neighbor.placed:
+                placed_neighbor_weight += weight
+                placed_neighbor_count += 1
+        degree = len(block.get_internal_netlist())
+        area = block.x * block.y
+        return (placed_neighbor_weight * 10.0) + (placed_neighbor_count * 2.0) + (degree * 0.25) + (area * 0.05)
+
+    def _rank_remaining_blocks(self) -> list["Block"]:
+        return sorted(
+            self._state.remaining_blocks,
+            key=lambda block: (
+                -self._block_priority_score(block),
+                -(block.x * block.y),
+                block.id,
+            ),
+        )
+
+    def _block_summary(self, block: "Block") -> dict:
+        neighbors = []
+        placed_neighbors = []
+        unplaced_neighbors = []
+        strongest_neighbors = []
+
+        for neighbor_id, weight in sorted(
+            block.get_internal_netlist().items(),
+            key=lambda item: (-item[1], item[0]),
+        ):
+            neighbor = self._block_lookup.get(neighbor_id)
+            neighbor_summary = {
+                "id": neighbor_id,
+                "weight": weight,
+                "placed": bool(neighbor.placed) if neighbor is not None else False,
+                "position": neighbor.position if neighbor is not None else None,
+            }
+            neighbors.append(neighbor_summary)
+            if neighbor is not None and neighbor.placed:
+                placed_neighbors.append(neighbor_summary)
+            else:
+                unplaced_neighbors.append(neighbor_summary)
+            if len(strongest_neighbors) < 3:
+                strongest_neighbors.append(neighbor_summary)
+
+        return {
+            "id": block.id,
+            "height": block.x,
+            "width": block.y,
+            "area": block.x * block.y,
+            "degree": len(block.get_internal_netlist()),
+            "priority_score": self._block_priority_score(block),
+            "connected_blocks": [neighbor["id"] for neighbor in neighbors],
+            "strongest_neighbors": strongest_neighbors,
+            "placed_neighbors": placed_neighbors,
+            "unplaced_neighbors": unplaced_neighbors,
+            "placed_neighbor_count": len(placed_neighbors),
+            "placed_neighbor_weight": sum(n["weight"] for n in placed_neighbors),
+            "placed": block.placed,
+            "position": block.position,
+        }
+
+    def _coarse_density_map(self, cells: int = 6) -> list[list[float]]:
+        density = [[0.0 for _ in range(cells)] for _ in range(cells)]
+        if self.canvas is None or self.grid_size <= 0:
+            return density
+
+        cell_h = max(1, self.grid_size // cells)
+        cell_w = max(1, self.grid_size // cells)
+
+        for row in range(self.grid_size):
+            for col in range(self.grid_size):
+                if self.canvas.grid[row][col] == 0:
+                    continue
+                r = min(cells - 1, row // cell_h)
+                c = min(cells - 1, col // cell_w)
+                density[r][c] += 1.0
+
+        cell_area = float(cell_h * cell_w)
+        if cell_area <= 0:
+            return density
+
+        for r in range(cells):
+            for c in range(cells):
+                density[r][c] = round(density[r][c] / cell_area, 3)
+
+        return density
+
+    def _anchor_score(self, block: "Block", row: int, col: int) -> float:
+        center = (row + (block.x / 2.0), col + (block.y / 2.0))
+        score = 0.0
+        placed_neighbor_count = 0
+        for neighbor_id, weight in block.get_internal_netlist().items():
+            neighbor = self._block_lookup.get(neighbor_id)
+            if neighbor is None or not neighbor.placed:
+                continue
+            neighbor_center = self._block_center(neighbor)
+            if neighbor_center is None:
+                continue
+            score -= weight * self._manhattan_distance(center, neighbor_center) / self.grid_size
+            placed_neighbor_count += 1
+
+        if placed_neighbor_count == 0:
+            grid_center = (self.grid_size / 2.0, self.grid_size / 2.0)
+            score -= 0.05 * self._manhattan_distance(center, grid_center) / self.grid_size
+
+        density = self._coarse_density_map()
+        density_row = min(len(density) - 1, max(0, row * len(density) // self.grid_size))
+        density_col = min(len(density[0]) - 1, max(0, col * len(density[0]) // self.grid_size))
+        score -= 0.15 * density[density_row][density_col]
+
+        return round(score, 4)
+
+    def _generate_candidate_positions(
+        self,
+        top_blocks: int = 4,
+        per_block_limit: int = 3,
+    ) -> list[dict]:
+        if self.canvas is None:
+            return []
+
+        candidates: list[dict] = []
+        ranked_blocks = self._rank_remaining_blocks()[:top_blocks]
+
+        for block in ranked_blocks:
+            block_candidates: list[dict] = []
+            for row in range(self.grid_size):
+                for col in range(self.grid_size):
+                    if not self.canvas.can_occupy((row, col), block.y, block.x):
+                        continue
+                    block_candidates.append(
+                        {
+                            "block_id": block.id,
+                            "x": row,
+                            "y": col,
+                            "height": block.x,
+                            "width": block.y,
+                            "score": self._anchor_score(block, row, col),
+                            "priority_score": round(self._block_priority_score(block), 4),
+                        }
+                    )
+            block_candidates.sort(key=lambda item: (-item["score"], item["x"], item["y"]))
+            candidates.extend(block_candidates[:per_block_limit])
+
+        candidates.sort(key=lambda item: (-item["priority_score"], -item["score"], item["block_id"], item["x"], item["y"]))
+        return candidates
     
     def _block_to_dict(self,block):
         return{
@@ -262,10 +429,16 @@ class ChipFlooringEnvironment(Environment):
         }
     
     def _build_observation(self,invalid_reason: Optional[str]=None)->ChipFlooringObservation:
+        remaining_block_summaries = [self._block_summary(b) for b in self._state.remaining_blocks]
+        focus_block = remaining_block_summaries[0] if remaining_block_summaries else None
         return ChipFlooringObservation(
             canva_space=self.canvas.grid,
             remaining_blocks=[self._block_to_dict(b) for b in self._state.remaining_blocks],
             placed_blocks=[self._block_to_dict(b) for b in self._state.placed_blocks],
+            block_summaries=remaining_block_summaries,
+            candidate_positions=self._generate_candidate_positions(),
+            density_map=self._coarse_density_map(),
+            placement_focus=focus_block,
             current_hpwl=self._state.current_hpwl,
             delta_hpwl=self._state.delta_hpwl,
             placed_block_count=len(self._state.placed_blocks),
