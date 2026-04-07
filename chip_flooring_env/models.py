@@ -37,6 +37,9 @@ class ChipFlooringObservation(Observation):
     canva_space : list[list[int]] = Field(default=[[0]],description="The grid type structure to represent the canva space")
     remaining_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent detailing abouth what are all the remaining block are there")
     placed_blocks : list[Any] = Field(default_factory=list,description="Used to give the agent so far placed blocks")
+    current_hpwl : float = Field(default=0.0,description="Current total wirelength cost for all fully placed connections")
+    delta_hpwl : float = Field(default=0.0,description="Wirelength cost added by the latest placement")
+    placed_block_count : int = Field(default=0,description="Number of blocks already placed")
     invalid_reasons:Optional[str] = Field(default=None,description="Reason for the last action was rejected")
 
 
@@ -46,16 +49,17 @@ class ChipFlooringResponseState(State):
 
     episode_id : str = Field(default="",description="Used to identify the episode id")
     step_count : int = Field(default=0,description="Used to identify the step count")
-    grid_size : int = Field(default=16,description="Used to identify the grid size")
+    grid_size : int = Field(default=24,description="Used to identify the grid size")
     grid : list[list[int]] = Field(default=[[0]],description="Used to identify the grid")     
     blocks : list[Any] = Field(default_factory=list,description="Used to identify the blocks")
     placed_blocks : list[Any] = Field(default_factory=list,description="Used to identify the placed blocks")
     remaining_blocks : list[Any] = Field(default_factory=list,description="Used to identify the remaining blocks")
     done : bool = Field(default=False,description="Used to identify if the episode is done")
     reward : float = Field(default=0.0,description="This is used to update the model thinking and the trajectory")
+    current_hpwl : float = Field(default=0.0,description="Current total HPWL score for the placed layout")
+    delta_hpwl : float = Field(default=0.0,description="HPWL cost added by the latest placement")
     trajectory: list[Any] = Field(default_factory=list,description="used to map the entire trajectory of the agent decission")
     
     
-
 
 

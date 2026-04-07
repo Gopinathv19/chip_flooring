@@ -70,11 +70,15 @@ class ChipFlooringEnv(
         """
         obs_data = payload.get("observation", {})
         observation = ChipFlooringObservation(
-            echoed_message=obs_data.get("echoed_message", ""),
-            message_length=obs_data.get("message_length", 0),
+            canva_space=obs_data.get("canva_space", [[0]]),
+            remaining_blocks=obs_data.get("remaining_blocks", []),
+            placed_blocks=obs_data.get("placed_blocks", []),
+            current_hpwl=obs_data.get("current_hpwl", 0.0),
+            delta_hpwl=obs_data.get("delta_hpwl", 0.0),
+            placed_block_count=obs_data.get("placed_block_count", 0),
+            invalid_reasons=obs_data.get("invalid_reasons"),
             done=payload.get("done", False),
             reward=payload.get("reward"),
-            metadata=obs_data.get("metadata", {}),
         )
 
         return StepResult(

@@ -1,5 +1,4 @@
 from uuid import uuid4
-import string
 from typing import Optional
 
 from openenv.core.env_server.interfaces import Environment
@@ -19,40 +18,13 @@ class ChipFlooringEnvironment(Environment):
         """Initialize the chip_flooring_env environment."""
         self._state = State(episode_id=str(uuid4()), step_count=0)
         self.grid_size=24
+        self.hpwl_weight = 0.03
         self._reset_count = 0
         self.canvas = None
         self.blocks = []
         self.block_id_map = {}
-        block_ids = list(string.ascii_uppercase[:24])
-        nodes = []
-        for idx, block_id in enumerate(block_ids):
-            height = 1 + (idx % 3)
-            width = 1 + ((idx + 1) % 3)
-            nodes.append({"id": block_id, "height": height, "width": width})
-
-        edges = []
-        for idx in range(len(block_ids) - 1):
-            edges.append(
-                {
-                    "from": block_ids[idx],
-                    "to": block_ids[idx + 1],
-                    "weight": 1.0 + (idx % 3) * 0.5,
-                }
-            )
-        for idx in range(len(block_ids) - 2):
-            if idx % 2 == 0:
-                edges.append(
-                    {
-                        "from": block_ids[idx],
-                        "to": block_ids[idx + 2],
-                        "weight": 0.75 + (idx % 4) * 0.25,
-                    }
-                )
-
-        self.global_netlist = {
-            "nodes": nodes,
-            "edges": edges,
-        }
+        self._block_lookup = {}
+        # Standard 15-block benchmark for v1/v2 evaluation.
         self.global_netlist = {
             "nodes": [
                 {"id": "A", "height": 2, "width": 1},
@@ -70,15 +42,6 @@ class ChipFlooringEnvironment(Environment):
                 {"id": "M", "height": 2, "width": 1},
                 {"id": "N", "height": 1, "width": 2},
                 {"id": "O", "height": 3, "width": 3},
-                {"id": "P", "height": 2, "width": 2},
-                {"id": "Q", "height": 1, "width": 5},
-                {"id": "R", "height": 4, "width": 2},
-                {"id": "S", "height": 2, "width": 4},
-                {"id": "T", "height": 1, "width": 3},
-                {"id": "U", "height": 3, "width": 1},
-                {"id": "V", "height": 2, "width": 3},
-                {"id": "W", "height": 1, "width": 2},
-                {"id": "X", "height": 3, "width": 4},
             ],
             "edges": [
                 {"from": "A", "to": "F", "weight": 2.4},
@@ -94,35 +57,15 @@ class ChipFlooringEnvironment(Environment):
                 {"from": "F", "to": "M", "weight": 1.2},
                 {"from": "F", "to": "N", "weight": 2.0},
                 {"from": "G", "to": "O", "weight": 2.8},
-                {"from": "G", "to": "P", "weight": 1.3},
-                {"from": "H", "to": "Q", "weight": 1.6},
-                {"from": "I", "to": "R", "weight": 2.2},
-                {"from": "J", "to": "S", "weight": 2.9},
-                {"from": "K", "to": "T", "weight": 1.5},
-                {"from": "L", "to": "U", "weight": 0.7},
-                {"from": "M", "to": "V", "weight": 1.9},
-                {"from": "N", "to": "W", "weight": 1.4},
-                {"from": "O", "to": "X", "weight": 3.1},
-                {"from": "P", "to": "Q", "weight": 1.05},
-                {"from": "Q", "to": "R", "weight": 2.35},
-                {"from": "R", "to": "S", "weight": 1.65},
-                {"from": "S", "to": "T", "weight": 0.95},
-                {"from": "T", "to": "U", "weight": 1.25},
-                {"from": "U", "to": "V", "weight": 2.15},
-                {"from": "V", "to": "W", "weight": 1.35},
-                {"from": "W", "to": "X", "weight": 2.45},
                 {"from": "B", "to": "E", "weight": 1.75},
                 {"from": "D", "to": "G", "weight": 2.05},
                 {"from": "F", "to": "J", "weight": 1.55},
                 {"from": "H", "to": "L", "weight": 0.85},
                 {"from": "I", "to": "N", "weight": 1.45},
                 {"from": "K", "to": "O", "weight": 2.25},
-                {"from": "M", "to": "Q", "weight": 1.95},
-                {"from": "P", "to": "T", "weight": 1.15},
-                {"from": "R", "to": "V", "weight": 2.55},
-                {"from": "S", "to": "X", "weight": 2.75},
             ],
         }
+ 
 
 
     def reset(self) -> ChipFlooringObservation:
@@ -135,6 +78,7 @@ class ChipFlooringEnvironment(Environment):
         self._reset_count += 1
         self.canvas = Canvas(self.grid_size)
         self.blocks = self._convert_global_netlist_to_blocks()
+        self._block_lookup = {block.id: block for block in self.blocks}
         self.block_id_map = {
             block.id: idx + 1 for idx, block in enumerate(self.blocks)
         }
@@ -147,7 +91,9 @@ class ChipFlooringEnvironment(Environment):
             placed_blocks=[],
             remaining_blocks=list(self.blocks),
             done=False,
-            reward=0
+            reward=0,
+            current_hpwl=0.0,
+            delta_hpwl=0.0,
         )
 
         return self._build_observation()
@@ -158,6 +104,7 @@ class ChipFlooringEnvironment(Environment):
         self._state.step_count += 1
         self._state.reward=0.0
         self._state.done=False
+        self._state.delta_hpwl = 0.0
         
         invalid_reasons = None
         x = action.x
@@ -184,8 +131,13 @@ class ChipFlooringEnvironment(Environment):
                 block.position=(x,y)
                 self._state.placed_blocks.append(block)
                 self._state.remaining_blocks.remove(block)
-                self._state.reward = 0.2 + (0.8 if len(self._state.remaining_blocks)==0 else 0.0)
+                incremental_hpwl = self._compute_incremental_hpwl(block)
+                self._state.delta_hpwl = incremental_hpwl
+                self._state.current_hpwl = self._compute_total_hpwl()
+                self._state.reward = 0.2 - (self.hpwl_weight * incremental_hpwl)
                 self._state.done = len(self._state.remaining_blocks) == 0
+                if self._state.done:
+                    self._state.reward += 0.8 - (self.hpwl_weight * self._state.current_hpwl)
         
         self._state.grid = self.canvas.grid
         self._state.trajectory.append(
@@ -199,6 +151,8 @@ class ChipFlooringEnvironment(Environment):
                 "reward": self._state.reward,
                 "done": self._state.done,
                 "invalid_reason": invalid_reasons,
+                "current_hpwl": self._state.current_hpwl,
+                "delta_hpwl": self._state.delta_hpwl,
                 "remaining_blocks": [b.id for b in self._state.remaining_blocks],
                 "placed_blocks": [b.id for b in self._state.placed_blocks],
             }
@@ -245,6 +199,58 @@ class ChipFlooringEnvironment(Environment):
             blocks[dist].connect_block(blocks[src], weight)
 
         return list(blocks.values())
+
+    def _block_center(self, block: "Block"):
+        if block.position is None:
+            return None
+        row, col = block.position
+        return (row + (block.x / 2.0), col + (block.y / 2.0))
+
+    def _manhattan_distance(self, point_a, point_b):
+        return abs(point_a[0] - point_b[0]) + abs(point_a[1] - point_b[1])
+
+    def _compute_incremental_hpwl(self, placed_block: "Block") -> float:
+        """
+        Compute the wirelength added by the latest placement.
+
+        Only connections whose other endpoint is already placed are counted here,
+        so each edge is charged once when its second endpoint lands.
+        """
+        placed_center = self._block_center(placed_block)
+        if placed_center is None:
+            return 0.0
+
+        total = 0.0
+        for neighbor_id, weight in placed_block.get_internal_netlist().items():
+            neighbor = self._block_lookup.get(neighbor_id)
+            if neighbor is None or not neighbor.placed:
+                continue
+            neighbor_center = self._block_center(neighbor)
+            if neighbor_center is None:
+                continue
+            total += weight * self._manhattan_distance(placed_center, neighbor_center) / self.grid_size
+
+        return total
+
+    def _compute_total_hpwl(self) -> float:
+        """
+        Compute the total weighted HPWL for the currently placed layout.
+
+        This only counts edges where both endpoints are already placed.
+        """
+        total = 0.0
+        for edge in self.global_netlist["edges"]:
+            src = self._block_lookup.get(edge["from"])
+            dst = self._block_lookup.get(edge["to"])
+            if src is None or dst is None or not src.placed or not dst.placed:
+                continue
+            src_center = self._block_center(src)
+            dst_center = self._block_center(dst)
+            if src_center is None or dst_center is None:
+                continue
+            total += edge["weight"] * self._manhattan_distance(src_center, dst_center) / self.grid_size
+
+        return total
     
     def _block_to_dict(self,block):
         return{
@@ -260,6 +266,9 @@ class ChipFlooringEnvironment(Environment):
             canva_space=self.canvas.grid,
             remaining_blocks=[self._block_to_dict(b) for b in self._state.remaining_blocks],
             placed_blocks=[self._block_to_dict(b) for b in self._state.placed_blocks],
+            current_hpwl=self._state.current_hpwl,
+            delta_hpwl=self._state.delta_hpwl,
+            placed_block_count=len(self._state.placed_blocks),
             done=self._state.done,
             reward=self._state.reward,
             invalid_reasons=invalid_reason,
